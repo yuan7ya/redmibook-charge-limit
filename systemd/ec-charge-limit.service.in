@@ -1,0 +1,15 @@
+[Unit]
+Description=Enable 80% battery charge limit via WMAA (Redmi Book Pro 14 2024 / TM2307)
+After=multi-user.target
+ConditionPathExists=/sys/class/power_supply/BAT0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/usr/sbin/modprobe acpi_call
+ExecStart=@REPO@/scripts/apply-limit-wmaa.sh on
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,10 @@
+# ACPI 反编译产物（可用 scripts/extract-wmaa.sh 重新生成）
+*.aml
+*.dat
+*.dsl
+*.hex
+
+# 临时/备份
+*.bak
+*.log
+/var/tmp/

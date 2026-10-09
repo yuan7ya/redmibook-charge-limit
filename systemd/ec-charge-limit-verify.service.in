@@ -1,0 +1,9 @@
+[Unit]
+Description=Verify battery charge limit state (read-only)
+After=ec-charge-limit.service
+
+[Service]
+Type=oneshot
+ExecStart=@REPO@/scripts/ec-verify-limit.sh
+StandardOutput=journal
+StandardError=journal

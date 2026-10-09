@@ -1,0 +1,284 @@
+# 在 Linux 下给 Redmi Book Pro 14 2024 开启 80% 充电上限
+
+小米官方只在 Windows 的「小米电脑管家」里提供充电阈值（且只有 **不开 / 80%** 两档）。
+这个仓库记录如何在 **Linux** 下做到同样的事，走的是固件自己的 WMI/ACPI 通道
+（`\_SB.PC00.WMID.WMAA`），**不直写 EC 寄存器**。
+
+已在以下配置实测通过：
+
+| 项目 | 值 |
+|---|---|
+| 机型 | XIAOMI Redmi Book Pro 14 2024 (TM2307) |
+| BIOS | RMAMT4B0P0B0B (2025-06-10) |
+| 内核 | 7.0.0-38-generic |
+| 发行版 | Ubuntu 26.04 LTS |
+
+> 同代的 **Redmi Book Pro 15 2023 (TM2309)** 在内核邮件列表里被确认使用同一套
+> 接口（见 [参考](#参考)）。其他机型请先只跑 `status` 确认，不要贸然 `on`。
+
+---
+
+## 结论
+
+**固件支持 80% 充电上限，且可以在 Linux 下开启。**
+
+正确做法是调用 WMAA 的 `FUN2=0x1000 / FUN3=0x02` 子命令：
+
+```
+WMAA(Arg0=1, Arg1=1, Arg2={0x00,0xFB, 0x00,0x10, 0x02,0x00, 0x01,0x00,0x00,0x00})
+                              FUN1=0xFB00  FUN2=0x1000  FUN3=2   FUN4=1
+```
+
+固件内部执行 `One | ECRD(LONL)` → `ECWT(LONL)`，**只置 LONL 的 bit 0，保留其他位**；
+置上后 EC 固件自己把 `AFBC` 从 100 改成 80。返回 `SGER=0x8000` 表示成功。
+
+因为 ACPI 表里**没有任何代码会写 `AFBC`**，所以经这个通道设置的上限**固定就是 80%**，
+不能设成别的百分比 —— 这和小米官方软件只有两档的行为完全一致。
+
+---
+
+## 快速开始
+
+```bash
+git clone <本仓库> && cd redmibook-charge-limit
+
+# 1. 先只读确认通道是否可用（不会改动任何状态）
+sudo ./scripts/wmaa-charge-limit.sh status
+```
+
+期望输出：
+
+```
+  SGER = 0x8000  (成功)
+  FUTR = 0x1000
+  FRD0 = 0x0002 (子命令)
+  FRD1 = 0x00000000 (返回值)
+
+  → 充电上限: 【已关闭】
+
+  SOH1 = 94%  (电池健康度)
+```
+
+`SGER=0x8000` 就说明通道通了。然后：
+
+```bash
+# 2. 开启 80% 上限
+sudo ./scripts/wmaa-charge-limit.sh on
+
+# 3. 综合验证（EC 寄存器 + 电池 + 适配器 + 自动判定）
+sudo ./scripts/ec-verify-limit.sh
+```
+
+`ec-verify-limit.sh` 会同时打印 EC 的 `LONL`/`AFBC` 和电池状态：
+
+```
+  LONL (0xA4) = 0x31   bit0 = 1  -> 上限开关 开
+  AFBC (0xA5) = 0x50 (80)  -> 充电上限百分比
+  ...
+  电量 80%, 状态 Not charging, 功率 0 uW
+  ✓ 停在 80% 附近且未充电 —— 上限正在起作用
+```
+
+关闭上限：
+
+```bash
+sudo ./scripts/wmaa-charge-limit.sh off
+```
+
+---
+
+## 开机自动生效（重要）
+
+**EC 每次冷启动都会重置这个设置**（实测确认，与内核邮件列表中其他机型的行为一致）。
+所以必须靠 systemd 开机重新下发一次：
+
+```bash
+sudo ./install.sh
+```
+
+`install.sh` 会：
+
+1. 按仓库实际位置生成 `ec-charge-limit.service`（自定位，仓库放哪都行）
+2. 写 `/etc/modules-load.d/acpi_call.conf` 让 `acpi_call` 开机加载
+3. `systemctl enable --now ec-charge-limit.service`
+
+验证：
+
+```bash
+systemctl status ec-charge-limit.service --no-pager
+journalctl -u ec-charge-limit.service -n 20 --no-pager
+```
+
+重启后日志里应出现：
+
+```
+[OK] 80% 充电上限已开启 (LONL bit0=1, AFBC→80)
+```
+
+卸载：
+
+```bash
+sudo ./install.sh uninstall
+```
+
+---
+
+## 实测证据
+
+### 固件层
+
+```
+WMAA on    → SGER=0x8000 ✓
+WMAA 回读  → FRD1=0x00000001 → 充电上限【已开启】
+EC 回读    → LONL(0xA4)=0x31 (bit0=1), AFBC(0xA5)=80
+```
+
+### 行为层（决定性）
+
+插着适配器（`ADP1 online=1`），`observe.sh 20 40` 实测：
+
+```
+21:26:30  Charging      78%   66359000 uW   ← 充电中
+21:26:50  Charging      79%   66595000 uW
+21:27:10  Charging      79%   66660000 uW   ← 66 W 全速
+21:27:30  Not charging  80%          0 uW   ← 到 80% 干净切断
+21:27:50  Not charging  80%          0 uW
+21:29:30  Not charging  80%          0 uW   ← 持续停充，也不放电
+```
+
+**66 W → 0 W 恰好发生在 80%。** 作为对照：未开上限时同样条件会一路冲过 80% 继续充，
+所以这排除了「高电量自然停充」的可能。
+
+### 重启后仍然生效
+
+新一次启动的服务状态：
+
+```
+uptime:        up 5 minutes
+Active:        active (exited) since ... 
+ExecStartPre:  modprobe acpi_call          status=0/SUCCESS
+ExecStart:     apply-limit-wmaa.sh on      status=0/SUCCESS
+当前:          Not charging / 80% / 0 uW / 适配器在线
+```
+
+---
+
+## 脚本说明
+
+全部脚本都**自定位**（不依赖仓库所在路径），且需要 root。
+
+| 脚本 | 作用 |
+|---|---|
+| `scripts/wmaa-charge-limit.sh` | 手动 `status` / `on` / `off`（走固件 WMAA） |
+| `scripts/apply-limit-wmaa.sh` | 开机下发用（写 + 回读校验，失败返回非零） |
+| `scripts/ec-verify-limit.sh` | 只读综合验证：EC 寄存器 + 电池 + 适配器 + 判定 |
+| `scripts/limit-control-test.sh` | 对照实验：开/关上限各等 5s，观察充电行为是否随之改变 |
+| `scripts/observe.sh` | 定时打印电池状态，用来看「是否停在 80%」 |
+| `scripts/ec-read.sh` | 读 EC 全部 256 字节（需 `modprobe ec_sys`） |
+| `scripts/ec-read-now.sh` | 只读打印 0xA4/0xA5 两个关键寄存器 |
+| `scripts/ec-state.sh` | 一次性抓 EC + 电池 + 适配器 + dmesg |
+| `scripts/extract-wmaa.sh` | 导出并反编译 ACPI 表，定位 WMAA 定义（复现分析用） |
+| `scripts/drain.sh` | 加速放电（做验证实验用，非必需） |
+| `install.sh` | 安装/卸载开机自启服务 |
+
+---
+
+## 原理速查
+
+### WMAA 接口
+
+```
+Method (WMAA, 3, Serialized)
+
+Arg2 布局:  FUN1 (2B, off 0x00)  FUN2 (2B, off 0x02)
+            FUN3 (2B, off 0x04)  FUN4 (4B, off 0x06)   // 至少 10 字节
+
+返回 RETS(32B):  SGER (2B)  FUTR (2B)  FRD0 (2B)
+                 FRD1 (4B)  FRD2 (4B)  FRD3 (4B)
+```
+
+- `Arg0 = 1`（唯一支持的 Case；注意方法体内并未真正引用它）
+- `Arg1 = FUN1`：`0xFA00` 读 / `0xFB00` 写
+- `FUN2`：`0x0800` 风扇、`0x0A00` MIUT、**`0x1000` 电池（本文关注）**
+- 其他 `FUN2` → `SGER = 0xE000`（不支持）
+
+`FUN2 = 0x1000` 分支：
+
+```
+读 (FUN1=0xFA00):
+    FUN3==0x01 → FRD1 = ECRD(SOH1)                    电池健康度 %
+    FUN3==0x02 → FRD1 = One & ECRD(LONL)              上限开关 bit0
+    FUN3==0x03 → FRD1 = ECRD(ADPW) >= 0x64 ? 0 : 1
+
+写 (FUN1=0xFB00, 仅 FUN3==0x02):
+    FUN4==1    → ECWT(One | ECRD(LONL),  LONL)   ← 只置 bit0
+    其他       → ECWT(ECRD(LONL) & ~One, LONL)   ← 只清 bit0
+```
+
+### EC 寄存器
+
+```
+LONL (0xA4)  bit0 = 1 表示上限开启（其余位不属于这个开关）
+AFBC (0xA5)  上限百分比，由 EC 固件在 LONL 置位后自动 100 → 80
+```
+
+---
+
+## 失败的路子（写在这里，免得别人再踩）
+
+### 1. 直接写 EC 寄存器 0xA4 / 0xA5 —— 不要这么做
+
+这是我们在走通 WMAA 之前试过的方式，**结果是错的**：
+
+- 写 `0xA4=0x31` + `0xA5=80` → **电池 75% 就完全不充电**（明显过度限制）
+- 只写 `0xA5=80`、`0xA4` 不动 → **完全无效**，一路冲过 80% 不停
+
+对照实验确认 EC 确实会读这两个字节（写回 `0xA4=0x00, 0xA5=100` 后立刻恢复
+`Charging` / ~65 W），但**整字节写入的语义是错的**。
+
+> 为什么固件自己写出来 `LONL=0x31` 就没问题？走 WMAA 开启后 `LONL` 同样读到 `0x31`，
+> 与 Windows 小米软件开启时的值完全一致 —— 说明 `0x30` 是「上限开启」状态的正常组成部分。
+> 直写失败的确切成因待考（可能是两字节写入的时序与固件不同）。
+>
+> **结论：只走 WMAA 通道，不要直写 EC。**
+
+另外，`ec_sys` 模块默认 `write_support=0`，直接写会得到
+`OSError: [Errno 22] Invalid argument`。就算要读，也得先 `sudo modprobe ec_sys`。
+
+### 2. 只看 ACPI 反编译会得出错误结论
+
+我们最初把 `Case(0x1000)` 当成纯状态查询读了一遍，没意识到 `FUN3=0x02`
+同时是 `LONL` 的读写开关，于是得出过「本机固件不提供充电阈值能力」的**错误结论**。
+
+**教训：本地反编译说「不可能」时，先去找同款硬件的既有证据** —— 最终解开问题的是
+内核邮件列表上另一位开发者对**同款主板**的逆向（见下）。
+
+### 3. bash 陷阱
+
+`set -o pipefail` + `cmd | grep -q` 会在**匹配成功时反而返回失败**：
+`grep -q` 匹配即退出 → `cmd` 收到 SIGPIPE(141) → 管道整体返回 141。
+
+```bash
+# 错误
+if lsmod | grep -q '^acpi_call'; then ...
+# 正确
+if grep -q '^acpi_call' < <(lsmod); then ...
+```
+
+---
+
+## 参考
+
+- **Linux 内核邮件列表**：Anton Karasev, 2026-10-08,
+  *"bitland-mifs-wmi: battery charge limit (command 0x10) on Xiaomi models"*
+  <https://lists.openwall.net/linux-kernel/2026/10/08/1628>
+  他逆向的正是 TM2307 / TM2309，结论与本仓库完全一致。
+  上游目前的建议是**先不要**对小米机器写命令 `0x10`
+  （因为该命令在原驱动里被用作 RGB 键盘模式），并主张用 power-supply ABI 的
+  `charge_types`（"Standard"/"Long Life"）而非 `charge_control_end_threshold`。
+- 更完整的逆向细节、ACPI 表分析过程与修正记录：见 [`docs/analysis.md`](docs/analysis.md)
+
+## 免责声明
+
+这是对固件私有接口的逆向使用，**未经厂商认可**。虽然在 TM2307 上实测正常，
+但不同 BIOS 版本行为可能不同。请先用 `status` 只读确认，风险自负。
