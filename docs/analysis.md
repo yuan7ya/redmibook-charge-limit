@@ -285,22 +285,46 @@ sudo modprobe -r ec_sys && sudo modprobe ec_sys write_support=1
 *"bitland-mifs-wmi: battery charge limit (command 0x10) on Xiaomi models"*：
 <https://lists.openwall.net/linux-kernel/2026/10/08/1628>
 
-**他逆向的正是 TM2307 和 TM2309** —— 与我们同款主板。要点（含原文引述）：
+**他逆向的正是 TM2307 和 TM2309** —— 与我们同款主板。要点如下（附原文引述及中文翻译）：
 
-- "command 0x10 ... is the battery interface of WMAA, and its subcommand 2 is
-  the firmware's 80 % charge limit"
+**1. 命令 0x10 就是 WMAA 的电池接口，子命令 2 是固件的 80% 上限。**
+
+> 原文："command 0x10 ... is the battery interface of WMAA, and its subcommand 2
+> is the firmware's 80 % charge limit"
+
+**2. 各子命令的含义：**
+
 - `GET 0x10/1` → EC 寄存器 **SOH1**（电池健康度）
-- `GET 0x10/2` → 充电上限：**1 = 开，0 = 关（EC `LONL` 的 bit 0）**
-- `GET 0x10/3` → 1 if EC register **ADPW < 0x8C**
-- `SET 0x10/2` → **value 1 sets bit 0 of LONL, any other value clears it**
-- **"nothing else in the ACPI tables touches LONL"**
-- **"With AC connected, setting the bit makes the EC change register AFBC from
-  100 to 80; nothing in the ACPI tables writes AFBC, so through the firmware the
-  limit is fixed at 80 %"**
-- 他的实测：「Charging stopped at 80 % ("Not charging"), switching the bit at
-  80 % toggled charging within about a second, and turning it on at 81 %
-  stopped charging without discharging. The setting survived charger replugs,
-  s2idle and about 17 hours on AC, **but not the battery running flat**.」
+- `GET 0x10/2` → 充电上限：**1 = 开，0 = 关（即 EC `LONL` 的 bit 0）**
+
+  > 原文："1 = on, 0 = off (bit 0 of EC LONL)"
+
+- `GET 0x10/3` → 适配器功率是否小于 0x8C（原文：`1 if EC register ADPW < 0x8C`）
+- `SET 0x10/2` → **写 1 置位 `LONL` 的 bit 0，写其他值清零**
+
+  > 原文："value 1 sets bit 0 of LONL, any other value clears it"
+
+**3. ACPI 表里没有其他任何地方碰 `LONL`。**
+
+> 原文："nothing else in the ACPI tables touches LONL"
+
+**4. 接交流电时，置位会让 EC 把 `AFBC` 从 100 改成 80；ACPI 表里没有任何代码写
+`AFBC`，所以经固件设置的上限固定就是 80%。**
+
+> 原文："With AC connected, setting the bit makes the EC change register AFBC
+> from 100 to 80; nothing in the ACPI tables writes AFBC, so through the
+> firmware the limit is fixed at 80 %"
+
+**5. 他的实测行为：**
+
+> 原文："Charging stopped at 80 % ("Not charging"), switching the bit at 80 %
+> toggled charging within about a second, and turning it on at 81 % stopped
+> charging without discharging. The setting survived charger replugs, s2idle and
+> about 17 hours on AC, but not the battery running flat."
+
+中文翻译：充电在 80% 停止（显示 "Not charging"）；在 80% 时切换该位，约一秒内
+充电状态就跟着变；在 81% 时开启，会停止充电但不放电。该设置在**重新插拔适配器、
+s2idle 挂起、以及约 17 小时交流供电**后都保持有效，**但电池耗尽后会丢失**。
 
 这与我方 ACPI 表**逐条吻合** —— 也直接解释了为什么写 `0xA5` 没用（EC 自己会改它）。
 

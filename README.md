@@ -269,10 +269,12 @@ if grep -q '^acpi_call' < <(lsmod); then ...
 
 ## 参考
 
-- **Linux 内核邮件列表**：Anton Karasev, 2026-10-08,
+- **Linux 内核邮件列表**：Anton Karasev，2026-10-08，
   *"bitland-mifs-wmi: battery charge limit (command 0x10) on Xiaomi models"*
+  （中译：bitland-mifs-wmi 驱动 —— 小米机型的电池充电上限，命令 0x10）：
   <https://lists.openwall.net/linux-kernel/2026/10/08/1628>
-  他逆向的正是 TM2307 / TM2309，结论与本仓库完全一致。
+  他逆向的正是 TM2307 / TM2309，结论与本仓库完全一致（详见
+  [`docs/analysis.md`](docs/analysis.md) 第 6 节，含原文与中文翻译）。
   上游目前的建议是**先不要**对小米机器写命令 `0x10`
   （因为该命令在原驱动里被用作 RGB 键盘模式），并主张用 power-supply ABI 的
   `charge_types`（"Standard"/"Long Life"）而非 `charge_control_end_threshold`。

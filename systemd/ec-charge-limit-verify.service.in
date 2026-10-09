@@ -1,5 +1,5 @@
 [Unit]
-Description=Verify battery charge limit state (read-only)
+Description=验证充电上限状态（只读）
 After=ec-charge-limit.service
 
 [Service]

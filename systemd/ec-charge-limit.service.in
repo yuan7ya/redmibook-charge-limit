@@ -1,5 +1,5 @@
 [Unit]
-Description=Enable 80% battery charge limit via WMAA (Redmi Book Pro 14 2024 / TM2307)
+Description=通过 WMAA 开启 80% 充电上限（Redmi Book Pro 14 2024 / TM2307）
 After=multi-user.target
 ConditionPathExists=/sys/class/power_supply/BAT0
 
